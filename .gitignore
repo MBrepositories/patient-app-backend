@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+*.zip
+Madhavbaug-Patient-App-API-Specification.pdf
+mibPULSE_API_SPECIFICATION.pdf
