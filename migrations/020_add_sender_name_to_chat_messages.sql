@@ -1,0 +1,2 @@
+ALTER TABLE app_chat_messages
+  ADD COLUMN sender_name VARCHAR(100) NULL DEFAULT NULL;

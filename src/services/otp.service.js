@@ -6,17 +6,16 @@ const RESEND_COOLDOWN_SECONDS = 60;
 
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-const sendOtp = async (channel, target) => {
-  // Rate limiting — block if OTP was sent within last 60 seconds
+const sendOtp = async (userType, userId, channel, target) => {
+  // Rate limiting — block if OTP sent within last 60 seconds
   const [existing] = await db.query(
-    'SELECT sent_at FROM app_otp_verifications WHERE channel = ? AND target = ?',
-    [channel, target]
+    'SELECT TIMESTAMPDIFF(SECOND, sent_at, NOW()) AS seconds_since FROM app_otps WHERE user_type = ? AND channel = ? AND target = ? ORDER BY sent_at DESC LIMIT 1',
+    [userType, channel, target]
   );
   if (existing.length) {
-    const sentAt = new Date(existing[0].sent_at);
-    const secondsSinceSent = (Date.now() - sentAt.getTime()) / 1000;
-    if (secondsSinceSent < RESEND_COOLDOWN_SECONDS) {
-      const wait = Math.ceil(RESEND_COOLDOWN_SECONDS - secondsSinceSent);
+    const secondsSince = existing[0].seconds_since;
+    if (secondsSince < RESEND_COOLDOWN_SECONDS) {
+      const wait = Math.ceil(RESEND_COOLDOWN_SECONDS - secondsSince);
       const err = new Error(`Please wait ${wait} seconds before requesting a new OTP.`);
       err.statusCode = 429;
       throw err;
@@ -24,21 +23,17 @@ const sendOtp = async (channel, target) => {
   }
 
   const otp = generateOtp();
-  const expiresAt = new Date(Date.now() + process.env.OTP_EXPIRY_MINUTES * 60 * 1000);
+  const expiryMinutes = parseInt(process.env.OTP_EXPIRY_MINUTES) || 10;
 
-  // Remove old OTP and store new one
   await db.query(
-    'DELETE FROM app_otp_verifications WHERE channel = ? AND target = ?',
-    [channel, target]
-  );
-  await db.query(
-    'INSERT INTO app_otp_verifications (channel, target, otp, attempts, expires_at, sent_at) VALUES (?, ?, ?, 0, ?, NOW())',
-    [channel, target, otp, expiresAt]
+    `INSERT INTO app_otps (user_type, user_id, channel, target, otp, attempts, expires_at, sent_at)
+     VALUES (?, ?, ?, ?, ?, 0, DATE_ADD(NOW(), INTERVAL ${expiryMinutes} MINUTE), NOW())`,
+    [userType, userId, channel, target, otp]
   );
 
   if (channel === 'phone') {
     await sendSms(target, otp);
-  } else if (channel === 'email') {
+  } else {
     await sendEmail(target, otp);
   }
 };
@@ -54,7 +49,6 @@ const sendSms = async (phone, otp) => {
     message,
     response: 'Y',
   });
-
   const response = await axios.post(process.env.PINNACLE_API_URL, params.toString(), {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   });
@@ -66,28 +60,27 @@ const sendEmail = async (email, otp) => {
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT) || 465,
     secure: parseInt(process.env.SMTP_PORT) === 465,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
   });
-
   await transporter.verify();
-  console.log('SMTP connection verified');
-
   const info = await transporter.sendMail({
     from: `"Madhavbaug" <${process.env.SMTP_USER}>`,
     to: email,
     subject: 'Your OTP for Madhavbaug Application',
-    text: `Your verification code for Madhavbaug Application is ${otp}. It expires in ${process.env.OTP_EXPIRY_MINUTES} minutes.`,
+    text: `Your verification code for Madhavbaug Application is ${otp}. It expires in ${process.env.OTP_EXPIRY_MINUTES || 10} minutes.`,
   });
-  console.log('Email sent:', info.messageId, '| Response:', info.response);
+  console.log('Email sent:', info.messageId);
 };
 
-const verifyOtp = async (channel, target, otp) => {
+const verifyOtp = async (userType, channel, target, otp) => {
+  const maxAttempts = parseInt(process.env.OTP_MAX_ATTEMPTS) || 3;
+
   const [rows] = await db.query(
-    'SELECT * FROM app_otp_verifications WHERE channel = ? AND target = ?',
-    [channel, target]
+    `SELECT *, TIMESTAMPDIFF(SECOND, NOW(), expires_at) AS seconds_remaining
+     FROM app_otps
+     WHERE user_type = ? AND channel = ? AND target = ? AND verified_at IS NULL
+     ORDER BY sent_at DESC LIMIT 1`,
+    [userType, channel, target]
   );
   const record = rows[0];
 
@@ -95,28 +88,37 @@ const verifyOtp = async (channel, target, otp) => {
     const err = new Error('OTP not found. Please request a new one.'); err.statusCode = 400; throw err;
   }
 
-  if (new Date() > new Date(record.expires_at)) {
-    await db.query('DELETE FROM app_otp_verifications WHERE id = ?', [record.id]);
+  if (record.seconds_remaining <= 0) {
     const err = new Error('OTP has expired. Please request a new one.'); err.statusCode = 400; throw err;
   }
 
-  const maxAttempts = parseInt(process.env.OTP_MAX_ATTEMPTS) || 3;
   if (record.attempts >= maxAttempts) {
     const err = new Error('Maximum OTP attempts exceeded. Please request a new one.'); err.statusCode = 400; throw err;
   }
 
   if (record.otp !== otp) {
-    await db.query(
-      'UPDATE app_otp_verifications SET attempts = attempts + 1 WHERE id = ?',
-      [record.id]
-    );
+    await db.query('UPDATE app_otps SET attempts = attempts + 1 WHERE id = ?', [record.id]);
     const remaining = maxAttempts - (record.attempts + 1);
     const err = new Error(`Invalid OTP. ${remaining} attempt(s) remaining.`); err.statusCode = 400; throw err;
   }
 
-  // OTP correct — delete so it cannot be reused
-  await db.query('DELETE FROM app_otp_verifications WHERE id = ?', [record.id]);
+  await db.query('UPDATE app_otps SET verified_at = NOW() WHERE id = ?', [record.id]);
   return true;
 };
 
-module.exports = { sendOtp, verifyOtp };
+// Check a recently verified OTP exists (used for multi-patient second call)
+const checkRecentlyVerified = async (userType, channel, target) => {
+  const [rows] = await db.query(
+    `SELECT id FROM app_otps
+     WHERE user_type = ? AND channel = ? AND target = ?
+       AND verified_at IS NOT NULL
+       AND verified_at > NOW() - INTERVAL 10 MINUTE
+     ORDER BY verified_at DESC LIMIT 1`,
+    [userType, channel, target]
+  );
+  if (!rows.length) {
+    const err = new Error('OTP session expired. Please request a new OTP.'); err.statusCode = 400; throw err;
+  }
+};
+
+module.exports = { sendOtp, verifyOtp, checkRecentlyVerified };

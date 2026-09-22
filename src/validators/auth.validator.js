@@ -1,20 +1,26 @@
 const Joi = require('joi');
 
-const loginSchema = Joi.object({
-  target: Joi.string().required(),
-  password: Joi.string().required(),
-  channel: Joi.string().valid('mobile', 'email').required(),
-});
-
 const registerSchema = Joi.object({
-  name: Joi.string().required(),
-  email: Joi.string().email().required(),
-  phone: Joi.string().length(10).pattern(/^[0-9]+$/).required(),
-  password: Joi.string().min(8).required(),
   role: Joi.string().valid('patient', 'doctor').required(),
+  // Patient fields
+  firstName: Joi.when('role', { is: 'patient', then: Joi.string().required(), otherwise: Joi.string().optional() }),
+  middleName: Joi.string().allow('').optional(),
+  lastName: Joi.when('role', { is: 'patient', then: Joi.string().required(), otherwise: Joi.string().optional() }),
+  // Doctor fields
+  name: Joi.when('role', { is: 'doctor', then: Joi.string().required(), otherwise: Joi.string().optional() }),
+  email: Joi.when('role', {
+    is: 'doctor',
+    then: Joi.string().email().required(),
+    otherwise: Joi.string().email().allow('', null).optional(),
+  }),
+  phone: Joi.string().length(10).pattern(/^[0-9]+$/).required(),
+  gender: Joi.string().valid('Male', 'Female', 'Other').required(),
+  password: Joi.string().min(8).required(),
+  branchId: Joi.number().integer().positive().required(),
 });
 
 const sendOtpSchema = Joi.object({
+  role: Joi.string().valid('patient', 'doctor').required(),
   channel: Joi.string().valid('phone', 'email').required(),
   target: Joi.when('channel', {
     is: 'email',
@@ -24,6 +30,7 @@ const sendOtpSchema = Joi.object({
 });
 
 const verifyOtpSchema = Joi.object({
+  role: Joi.string().valid('patient', 'doctor').required(),
   channel: Joi.string().valid('phone', 'email').required(),
   target: Joi.when('channel', {
     is: 'email',
@@ -31,6 +38,7 @@ const verifyOtpSchema = Joi.object({
     otherwise: Joi.string().length(10).pattern(/^[0-9]+$/).required(),
   }),
   otp: Joi.string().length(6).required(),
+  patientDbId: Joi.number().integer().positive().optional(),
 });
 
-module.exports = { loginSchema, registerSchema, sendOtpSchema, verifyOtpSchema };
+module.exports = { registerSchema, sendOtpSchema, verifyOtpSchema };

@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS app_exercise_sessions (
+  id                INT(11)                                              NOT NULL AUTO_INCREMENT,
+  patient_id        BIGINT(20)                                           NOT NULL COMMENT 'patients.id',
+  plan_id           INT(11)                                              NOT NULL,
+  exercise_id       VARCHAR(100)                                         NOT NULL COMMENT 'e.g. diabetes-day-12',
+  exercise_key      ENUM('squat', 'chairExercise', 'standingSideStretch') NULL,
+  duration_seconds  INT(11)                                              NULL,
+  reps              INT(11)                                              NULL,
+  target_reps       INT(11)                                              NULL,
+  posture_score     TINYINT(3)                                           NULL,
+  accuracy_score    TINYINT(3)                                           NULL,
+  pace_score        TINYINT(3)                                           NULL,
+  exercise_score    TINYINT(3)                                           NULL,
+  calories_burned   INT(11)                                              NULL,
+  compliance_status ENUM('completed', 'partial', 'missed')              NOT NULL DEFAULT 'completed',
+  session_date      DATE                                                 NOT NULL COMMENT 'Date of session (client timestamp)',
+  created_at        TIMESTAMP                                            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  INDEX idx_patient (patient_id),
+  INDEX idx_patient_exercise (patient_id, exercise_id),
+  INDEX idx_patient_date (patient_id, session_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Camera-graded exercise session results';

@@ -1,36 +1,89 @@
 const db = require('../config/db');
+const { getRewardsSummary } = require('./rewards.service');
 
 const getSummary = async (userId) => {
-  // Get app_user with hospital_patient_id
-  const [userRows] = await db.query(
-    'SELECT hospital_patient_id FROM app_users WHERE id = ?',
-    [userId]
-  );
-  const user = userRows[0];
-  const patientId = user ? user.hospital_patient_id : null;
+  const patientId = userId || null;
 
-  const [appointments, vitals] = await Promise.all([
+  const [appointments, vitals, compliance, rewards, vitalsToday] = await Promise.all([
     getAppointments(patientId),
     getLatestVitals(patientId),
+    getSevenDayCompliance(patientId),
+    patientId ? getRewardsSummary(patientId) : null,
+    getTodayVitalsCount(patientId),
   ]);
 
+  const streakDays = rewards ? getStreakDays(rewards) : 0;
+
   return {
-    // App-generated fields — returned as defaults (frontend handles these)
-    streak: { days: 0 },
+    streak: { days: streakDays },
     goals: { completed: 0, target: 0, completionMessage: '' },
-    vitals: { logged: 0, target: 3 },
+    vitals: { logged: vitalsToday, target: 4 },
     steps: { count: 0 },
-    points: { total: 0 },
-    compliance: {
-      dietPercent: 0,
-      exercisePercent: 0,
-      medicinePercent: 0,
-      sleepAvgHours: 0,
-      stepsAvgPerDay: 0,
-    },
-    // Hospital DB data
+    points: { total: rewards ? rewards.totalPoints : 0 },
+    compliance,
     reversalJourney: vitals,
     appointments,
+  };
+};
+
+const getTodayVitalsCount = async (patientId) => {
+  if (!patientId) return 0;
+  const [[row]] = await db.query(
+    `SELECT COUNT(DISTINCT type) AS cnt FROM app_vitals
+     WHERE app_user_id = ? AND DATE(logged_at) = CURDATE()`,
+    [patientId]
+  );
+  return Number(row?.cnt || 0);
+};
+
+const getSevenDayCompliance = async (patientId) => {
+  if (!patientId) {
+    return { dietPercent: 0, exercisePercent: 0, medicinePercent: 0, sleepAvgHours: 0, stepsAvgPerDay: 0 };
+  }
+
+  const DAYS = 7;
+  const MEALS_TARGET = 3;
+
+  const [dietRows, exerciseRows, medicineRows] = await Promise.all([
+    // Diet: count distinct days where patient logged >= 3 meal periods
+    db.query(
+      `SELECT COUNT(*) AS compliant_days FROM (
+         SELECT DATE(logged_at) AS log_date
+         FROM app_meal_logs
+         WHERE patient_id = ? AND logged_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         GROUP BY DATE(logged_at)
+         HAVING COUNT(DISTINCT meal_period) >= ?
+       ) t`,
+      [patientId, DAYS, MEALS_TARGET]
+    ),
+    // Exercise: count distinct days with at least 1 completed session
+    db.query(
+      `SELECT COUNT(DISTINCT DATE(created_at)) AS compliant_days
+       FROM app_exercise_sessions
+       WHERE app_user_id = ? AND DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND compliance_status = 'completed'`,
+      [patientId, DAYS]
+    ),
+    // Medicine: count distinct days with at least 1 medicine logged
+    db.query(
+      `SELECT COUNT(DISTINCT DATE(logged_at)) AS compliant_days
+       FROM app_medicine_logs
+       WHERE app_user_id = ? AND logged_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         AND taken = 1`,
+      [patientId, DAYS]
+    ),
+  ]);
+
+  const dietDays     = Number(dietRows[0][0]?.compliant_days     || 0);
+  const exerciseDays = Number(exerciseRows[0][0]?.compliant_days || 0);
+  const medicineDays = Number(medicineRows[0][0]?.compliant_days || 0);
+
+  return {
+    dietPercent:     Math.round((dietDays     / DAYS) * 100),
+    exercisePercent: Math.round((exerciseDays / DAYS) * 100),
+    medicinePercent: Math.round((medicineDays / DAYS) * 100),
+    sleepAvgHours:   0,
+    stepsAvgPerDay:  0,
   };
 };
 
@@ -104,6 +157,15 @@ const resolveStage = (hba1c) => {
   if (hba1c < 6.5) return 'improving';
   if (hba1c < 8.0) return 'stable';
   return 'started';
+};
+
+// Extract consecutive streak days from rewards milestones
+const getStreakDays = (rewards) => {
+  const streak = rewards.milestones?.find(m => m.kind === 'streak');
+  if (!streak) return 0;
+  if (streak.completed) return 7;
+  const match = String(streak.subtitle || '').match(/^(\d+)\/7/);
+  return match ? parseInt(match[1]) : 0;
 };
 
 module.exports = { getSummary };

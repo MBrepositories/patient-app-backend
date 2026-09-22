@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { getMadhavbaugMedicinesMaster, getAllopathyMedicinesMaster } = require('../controllers/medicines.controller');
+const { getMadhavbaugMedicinesMaster, getAllopathyMedicinesMaster, getMedicinesSummary, markDoseTaken, getMedicineAdherence } = require('../controllers/medicines.controller');
+const { authenticate } = require('../middleware/auth');
 
 /**
  * @swagger
@@ -8,6 +9,8 @@ const { getMadhavbaugMedicinesMaster, getAllopathyMedicinesMaster } = require('.
  *   get:
  *     summary: Get all active Madhavbaug medicines (master sync)
  *     tags: [Medicines]
+ *     security:
+ *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: Madhavbaug medicines fetched successfully
@@ -56,7 +59,7 @@ const { getMadhavbaugMedicinesMaster, getAllopathyMedicinesMaster } = require('.
  *                           duration:
  *                             type: integer
  */
-router.get('/madhavbaug/master', getMadhavbaugMedicinesMaster);
+router.get('/madhavbaug/master', authenticate, getMadhavbaugMedicinesMaster);
 
 /**
  * @swagger
@@ -64,6 +67,16 @@ router.get('/madhavbaug/master', getMadhavbaugMedicinesMaster);
  *   get:
  *     summary: Get all active Allopathy medicines (master sync)
  *     tags: [Medicines]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *           minLength: 2
+ *         description: Search medicine by name (minimum 2 characters)
  *     responses:
  *       200:
  *         description: Allopathy medicines fetched successfully
@@ -114,6 +127,74 @@ router.get('/madhavbaug/master', getMadhavbaugMedicinesMaster);
  *                           therapeutic_class:
  *                             type: string
  */
-router.get('/allopathy/master', getAllopathyMedicinesMaster);
+router.get('/allopathy/master', authenticate, getAllopathyMedicinesMaster);
+
+/**
+ * @swagger
+ * /medicines/summary:
+ *   get:
+ *     summary: Get patient's Madhavbaug and Allopathy medicines with today's taken status
+ *     tags: [Medicines]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Medicines summary fetched successfully
+ */
+router.get('/summary', authenticate, getMedicinesSummary);
+
+/**
+ * @swagger
+ * /medicines/{medicationId}/mark-taken:
+ *   post:
+ *     summary: Mark a dose slot as taken or untaken
+ *     tags: [Medicines]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: medicationId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: medicine ID (from medicines summary response)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [slot, taken, type]
+ *             properties:
+ *               slot:
+ *                 type: string
+ *                 enum: [morning, afternoon, night, sos]
+ *                 example: morning
+ *               taken:
+ *                 type: boolean
+ *                 example: true
+ *               type:
+ *                 type: string
+ *                 enum: [madhavbaug, allopathy]
+ *                 example: madhavbaug
+ *     responses:
+ *       204:
+ *         description: Dose marked successfully
+ */
+router.post('/:medicationId/mark-taken', authenticate, markDoseTaken);
+
+/**
+ * @swagger
+ * /medicine/adherence:
+ *   get:
+ *     summary: Get 7-day medicine adherence per medication
+ *     tags: [Medicines]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Medicine adherence fetched successfully
+ */
+router.get('/adherence', authenticate, getMedicineAdherence);
 
 module.exports = router;

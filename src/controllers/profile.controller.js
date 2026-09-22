@@ -3,7 +3,7 @@ const { success, error } = require('../utils/response');
 
 const getProfile = async (req, res) => {
   try {
-    const profile = await profileService.getProfile(req.user.id);
+    const profile = await profileService.getProfile(req.user.id, req.user.role);
     return success(res, profile);
   } catch (err) {
     return error(res, err.message, err.statusCode || 400);
@@ -12,7 +12,7 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
   try {
-    const profile = await profileService.updateProfile(req.user.id, req.body);
+    const profile = await profileService.updateProfile(req.user.id, req.user.role, req.body);
     return success(res, profile);
   } catch (err) {
     return error(res, err.message, err.statusCode || 400);
