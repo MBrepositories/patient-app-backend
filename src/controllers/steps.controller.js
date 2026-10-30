@@ -1,6 +1,7 @@
 const stepsService = require('../services/steps.service');
 const { success, error } = require('../utils/response');
 
+
 const getStepsDetail = async (req, res) => {
   try {
     const result = await stepsService.getStepsDetail(req.user.id);
@@ -12,8 +13,17 @@ const getStepsDetail = async (req, res) => {
 
 const syncSteps = async (req, res) => {
   try {
-    const { steps } = req.body;
-    await stepsService.syncSteps(req.user.id, steps);
+    const { steps, date } = req.body;
+    await stepsService.syncSteps(req.user.id, steps, date || null);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return error(res, err.message, err.statusCode || 500);
+  }
+};
+
+const syncStepsHistory = async (req, res) => {
+  try {
+    await stepsService.syncStepsHistory(req.user.id, req.body);
     return res.status(200).json({ success: true });
   } catch (err) {
     return error(res, err.message, err.statusCode || 500);
@@ -39,4 +49,4 @@ const syncWalking = async (req, res) => {
   }
 };
 
-module.exports = { getStepsDetail, syncSteps, getWalkingDetail, syncWalking };
+module.exports = { getStepsDetail, syncSteps, syncStepsHistory, getWalkingDetail, syncWalking };

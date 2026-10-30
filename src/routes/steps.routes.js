@@ -3,6 +3,7 @@ const { authenticate } = require('../middleware/auth');
 const {
   getStepsDetail,
   syncSteps,
+  syncStepsHistory,
   getWalkingDetail,
   syncWalking,
 } = require('../controllers/steps.controller');
@@ -95,12 +96,103 @@ stepsRouter.get('/detail', authenticate, getStepsDetail);
  *               steps:
  *                 type: integer
  *                 description: Current running total from pedometer
- *                 example: 1300
+ *                 example: 5230
+ *               date:
+ *                 type: string
+ *                 description: Patient's local date (YYYY-MM-DD). If omitted, server uses current date (old behavior).
+ *                 example: "2026-09-29"
+ *               timezoneOffsetMinutes:
+ *                 type: integer
+ *                 description: Patient's timezone offset in minutes (e.g. 330 for IST)
+ *                 example: 330
  *     responses:
- *       204:
+ *       200:
  *         description: Steps synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: Error message here
  */
 stepsRouter.post('/sync', authenticate, syncSteps);
+
+/**
+ * @swagger
+ * /steps/sync-history:
+ *   post:
+ *     summary: Sync historical step totals for past days (up to 30 days)
+ *     tags: [Steps & Walking]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [days]
+ *             properties:
+ *               timezoneOffsetMinutes:
+ *                 type: integer
+ *                 example: 330
+ *               days:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required: [date, steps]
+ *                   properties:
+ *                     date:
+ *                       type: string
+ *                       example: "2026-09-25"
+ *                     steps:
+ *                       type: integer
+ *                       example: 4000
+ *                 example:
+ *                   - { "date": "2026-09-25", "steps": 4000 }
+ *                   - { "date": "2026-09-26", "steps": 6100 }
+ *                   - { "date": "2026-09-27", "steps": 5200 }
+ *     responses:
+ *       200:
+ *         description: Step history synced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: Error message here
+ */
+stepsRouter.post('/sync-history', authenticate, syncStepsHistory);
 
 // ─── WALKING ROUTER ───────────────────────────────────────────────────────────
 

@@ -28,6 +28,8 @@ const doctorRoutes = require('./src/routes/doctor/doctor.routes');
 const doctorPatientChatRoutes = require('./src/routes/doctor-patient-chat.routes');
 const publicRoutes = require('./src/routes/public.routes');
 const notificationsRoutes = require('./src/routes/notifications.routes');
+const sleepRoutes = require('./src/routes/sleep.routes');
+const patientRoutes = require('./src/routes/patient.routes');
 
 const app = express();
 
@@ -66,11 +68,19 @@ app.use('/api/steps', stepsRouter);
 app.use('/api/walking', walkingRouter);
 app.use('/api/public', publicRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/sleep', sleepRoutes);
+app.use('/api/patient', patientRoutes);
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found.' }));
+
+// Global error handler
+app.use((err, req, res, next) => {
+  const status = err.statusCode || 500;
+  res.status(status).json({ success: false, message: err.message || 'Internal server error.' });
+});
 
 module.exports = app;

@@ -103,7 +103,8 @@ const getAlerts = async (doctorId) => {
     [patientIds]
   );
   const [activeSteps] = await db.query(
-    `SELECT DISTINCT app_user_id AS id FROM app_steps_log WHERE DATE(logged_at) = CURDATE() AND app_user_id IN (?)`,
+    `SELECT DISTINCT app_user_id AS id FROM app_steps_log
+     WHERE (date = CURDATE() OR DATE(logged_at) = CURDATE()) AND app_user_id IN (?)`,
     [patientIds]
   );
   const [activeEx] = await db.query(

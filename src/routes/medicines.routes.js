@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getMadhavbaugMedicinesMaster, getAllopathyMedicinesMaster, getMedicinesSummary, markDoseTaken, getMedicineAdherence } = require('../controllers/medicines.controller');
+const { getMadhavbaugMedicinesMaster, getAllopathyMedicinesMaster, getMedicinesSummary, markDoseTaken, getMedicineAdherence, getPatientMedicines } = require('../controllers/medicines.controller');
 const { authenticate } = require('../middleware/auth');
 
 /**
@@ -175,8 +175,9 @@ router.get('/summary', authenticate, getMedicinesSummary);
  *                 example: true
  *               type:
  *                 type: string
- *                 enum: [madhavbaug, allopathy]
+ *                 enum: [madhavbaug, allopathy, app]
  *                 example: madhavbaug
+ *                 description: Use "app" for doctor-added medicines. Pass numeric id (e.g. 2 for "app-2") in the path.
  *     responses:
  *       204:
  *         description: Dose marked successfully
@@ -196,5 +197,7 @@ router.post('/:medicationId/mark-taken', authenticate, markDoseTaken);
  *         description: Medicine adherence fetched successfully
  */
 router.get('/adherence', authenticate, getMedicineAdherence);
+
+router.get('/prescribed', authenticate, getPatientMedicines);
 
 module.exports = router;

@@ -29,6 +29,9 @@ const options = {
       { name: 'Survey' },
       { name: 'Chat' },
       { name: 'History' },
+      { name: 'Notifications', description: 'Patient and doctor notification APIs' },
+      { name: 'Sleep', description: 'Patient sleep tracking' },
+      { name: 'Patient', description: 'Patient-specific APIs (medicines, popups)' },
       { name: 'Doctor', description: 'Doctor-facing APIs for schedule, patients and appointments' },
     ],
     components: {

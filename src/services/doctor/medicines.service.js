@@ -54,8 +54,27 @@ const updateDosage = async (doctorId, patientId, medicationId, type, dosage) => 
       [dosageStr, medicationId]
     );
 
+  } else if (type === 'app') {
+    const [[row]] = await db.query(
+      `SELECT id, medicine_name FROM app_patient_medicines WHERE id = ? AND patient_id = ? LIMIT 1`,
+      [medicationId, patientId]
+    );
+    if (!row) {
+      const err = new Error('Medication not found');
+      err.statusCode = 404;
+      throw err;
+    }
+    medicineName = row.medicine_name;
+
+    await db.query(
+      `UPDATE app_patient_medicines
+       SET morning = ?, afternoon = ?, night = ?, sos = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [morning || 0, afternoon || 0, night || 0, sos ? 1 : 0, medicationId]
+    );
+
   } else {
-    const err = new Error('Invalid type. Must be allopathy or madhavbaug');
+    const err = new Error('Invalid type. Must be allopathy, madhavbaug or app');
     err.statusCode = 400;
     throw err;
   }

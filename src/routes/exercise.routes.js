@@ -80,7 +80,48 @@ router.get('/care-plans', authenticate, getCarePlans);
  *                       example: 90
  *                     currentDayNumber:
  *                       type: integer
- *                       example: 12
+ *                       example: 5
+ *                     tracks:
+ *                       type: object
+ *                       properties:
+ *                         exercise:
+ *                           type: object
+ *                           properties:
+ *                             assigned:
+ *                               type: boolean
+ *                               example: true
+ *                             planName:
+ *                               type: string
+ *                               example: Diabetes Exercise Plan
+ *                             currentDayNumber:
+ *                               type: integer
+ *                               example: 5
+ *                             totalDays:
+ *                               type: integer
+ *                               example: 90
+ *                             startDate:
+ *                               type: string
+ *                               example: "2026-09-26"
+ *                         meditation:
+ *                           type: object
+ *                           properties:
+ *                             assigned:
+ *                               type: boolean
+ *                               example: false
+ *                             planName:
+ *                               type: string
+ *                               nullable: true
+ *                               example: null
+ *                             currentDayNumber:
+ *                               type: integer
+ *                               example: 1
+ *                             totalDays:
+ *                               type: integer
+ *                               example: 90
+ *                             startDate:
+ *                               type: string
+ *                               nullable: true
+ *                               example: null
  *                     days:
  *                       type: array
  *                       items:

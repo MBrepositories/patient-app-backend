@@ -103,6 +103,7 @@ const socialLogin = async ({ provider, idToken, role }) => {
       patient = newRows[0];
     }
 
+    db.query('UPDATE patients SET app_last_login = NOW() WHERE id = ?', [patient.id]).catch(() => {});
     const payload = { id: patient.id, patientId: patient.patient_id, role: 'patient' };
     return {
       token: generateToken(payload),
@@ -120,13 +121,13 @@ const socialLogin = async ({ provider, idToken, role }) => {
   // 3. Doctor flow — doctors must already exist, no auto-register
   if (role === 'doctor') {
     let [[doctor]] = await db.query(
-      `SELECT id, name, first_name, last_name, phone, email FROM users WHERE ${socialField} = ? AND status = 'active' LIMIT 1`,
+      `SELECT id, name, first_name, last_name, phone, email FROM users WHERE ${socialField} = ? AND is_active = 1 LIMIT 1`,
       [socialId]
     );
 
     if (!doctor && email) {
       [[doctor]] = await db.query(
-        `SELECT id, name, first_name, last_name, phone, email FROM users WHERE email = ? AND status = 'active' LIMIT 1`,
+        `SELECT id, name, first_name, last_name, phone, email FROM users WHERE email = ? AND is_active = 1 LIMIT 1`,
         [email.toLowerCase()]
       );
       if (doctor) {
@@ -141,6 +142,7 @@ const socialLogin = async ({ provider, idToken, role }) => {
       );
     }
 
+    db.query('UPDATE users SET app_last_login = NOW() WHERE id = ?', [doctor.id]).catch(() => {});
     const payload = { id: doctor.id, role: 'doctor' };
     return {
       token: generateToken(payload),

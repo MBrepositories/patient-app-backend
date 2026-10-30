@@ -22,7 +22,7 @@ const getProfile = async (userId, role) => {
       `SELECT id, name, first_name AS firstName, last_name AS lastName,
               phone, email, gender, role,
               drdegree AS degree, drregistration AS registration
-       FROM users WHERE id = ? AND status = 'active'`,
+       FROM users WHERE id = ? AND is_active = 1`,
       [userId]
     );
     if (!rows.length) {

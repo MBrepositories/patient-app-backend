@@ -74,20 +74,32 @@ const formatDoctor = (u) => ({
 
 const findDoctorByPhone = async (phone) => {
   const [rows] = await db.query(
-    `SELECT id, username, name, first_name, last_name, phone, email, app_password, app_registered_at
-     FROM users WHERE phone = ? AND status = 'active' LIMIT 1`,
+    `SELECT id, username, name, first_name, last_name, phone, email, app_password, app_registered_at, is_active
+     FROM users WHERE phone = ? LIMIT 1`,
     [phone]
   );
-  return rows[0] || null;
+  if (!rows[0]) return null;
+  if (!rows[0].is_active) {
+    const err = new Error('Your account is inactive. Please contact your administrator.');
+    err.statusCode = 403;
+    throw err;
+  }
+  return rows[0];
 };
 
 const findDoctorByEmail = async (email) => {
   const [rows] = await db.query(
-    `SELECT id, username, name, first_name, last_name, phone, email, app_password, app_registered_at
-     FROM users WHERE email = ? AND status = 'active' LIMIT 1`,
+    `SELECT id, username, name, first_name, last_name, phone, email, app_password, app_registered_at, is_active
+     FROM users WHERE email = ? LIMIT 1`,
     [email.toLowerCase()]
   );
-  return rows[0] || null;
+  if (!rows[0]) return null;
+  if (!rows[0].is_active) {
+    const err = new Error('Your account is inactive. Please contact your administrator.');
+    err.statusCode = 403;
+    throw err;
+  }
+  return rows[0];
 };
 
 // ─── Register ────────────────────────────────────────────────────────────────
@@ -259,6 +271,7 @@ const verifyOtp = async ({ role, channel, target, otp, patientDbId }) => {
       const err = new Error('Selected patient not found.'); err.statusCode = 404; throw err;
     }
 
+    db.query('UPDATE patients SET app_last_login = NOW() WHERE id = ?', [patient.id]).catch(() => {});
     const payload = { id: patient.id, patientId: patient.patient_id, role: 'patient' };
     return { token: generateToken(payload), user: formatPatient(patient) };
   }
@@ -272,6 +285,7 @@ const verifyOtp = async ({ role, channel, target, otp, patientDbId }) => {
       const err = new Error('Account not found.'); err.statusCode = 404; throw err;
     }
 
+    db.query('UPDATE users SET app_last_login = NOW() WHERE id = ?', [doctor.id]).catch(() => {});
     const payload = { id: doctor.id, role: 'doctor' };
     return { token: generateToken(payload), user: formatDoctor(doctor) };
   }
@@ -464,6 +478,7 @@ const loginWithPassword = async (identifier, password, role) => {
   }
 
   if (role === 'patient') {
+    db.query('UPDATE patients SET app_last_login = NOW() WHERE id = ?', [user.id]).catch(() => {});
     const payload = { id: user.id, patientId: user.patient_id, role: 'patient' };
     return {
       token: generateToken(payload),
@@ -477,6 +492,7 @@ const loginWithPassword = async (identifier, password, role) => {
       },
     };
   } else {
+    db.query('UPDATE users SET app_last_login = NOW() WHERE id = ?', [user.id]).catch(() => {});
     const payload = { id: user.id, role: 'doctor' };
     return {
       token: generateToken(payload),

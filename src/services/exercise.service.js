@@ -12,58 +12,97 @@ const PLAN_KEY_MAP = {
 // ─── Care Plans ───────────────────────────────────────────────────────────────
 
 const getCarePlans = () => [
-  { planId: 1, name: 'Diabetes Care Plan' },
-  { planId: 2, name: 'Heart Care Plan' },
-  { planId: 3, name: 'Hypertension Care Plan' },
-  { planId: 4, name: 'Obesity Management Program' },
-  { planId: 5, name: 'Knee Care Plan' },
-  { planId: 6, name: 'Manoswasthya - Guided Meditation' },
+  { planId: 1, name: 'Diabetes Care Plan',           alignedVital: 'hba1c' },
+  { planId: 2, name: 'Heart Care Plan',               alignedVital: 'ldl' },
+  { planId: 3, name: 'Hypertension Care Plan',        alignedVital: 'bloodPressure' },
+  { planId: 4, name: 'Obesity Management Program',    alignedVital: 'weight' },
+  { planId: 5, name: 'Knee Care Plan',                alignedVital: 'weight' },
+  { planId: 6, name: 'Manoswasthya - Guided Meditation', alignedVital: null },
 ];
 
 // ─── Today's Program ──────────────────────────────────────────────────────────
 
+const formatDate = (d) => {
+  if (!d) return null;
+  if (d instanceof Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return String(d).slice(0, 10);
+};
+
+// Day 1 = day after enrolment
+const enrollmentToStartDate = (d) => {
+  if (!d) return null;
+  const date = d instanceof Date ? new Date(d) : new Date(String(d).slice(0, 10));
+  date.setDate(date.getDate() + 1);
+  return formatDate(date);
+};
+
+const sessionDateStr = (d) =>
+  d instanceof Date ? d.toISOString().split('T')[0] : String(d).split('T')[0];
+
+// Calendar-gated currentDayNumber:
+// A day only "advances" if ALL its items are completed on a PREVIOUS calendar day.
+// Completes Day 5 today → stays 5 today, becomes 6 tomorrow.
+const computeCurrentDay = (byDay, sessionMap, totalD, today) => {
+  let current = 1;
+  for (let day = 1; day <= totalD; day++) {
+    const items = byDay[day] || [];
+    if (items.length === 0) continue;
+    const allDoneBeforeToday = items.every(e => {
+      const session = sessionMap[`${e.plan_key}-day-${e.day_number}`];
+      if (!session) return false;
+      return sessionDateStr(session.session_date) < today;
+    });
+    if (allDoneBeforeToday) {
+      current = day + 1;
+    } else {
+      break;
+    }
+  }
+  return Math.min(current, totalD);
+};
+
 const getTodayProgram = async (patientId, queryPlanId) => {
-  let planId = queryPlanId ? parseInt(queryPlanId) : null;
-  let startDate = null;
-  let totalDays = 90;
+  const today = new Date().toISOString().split('T')[0];
 
-  if (!planId) {
-    // No planId passed — look up active enrollment
-    const [enrollments] = await db.query(
-      'SELECT plan_id, start_date, total_days FROM app_patient_careplans WHERE app_user_id = ? AND status = "active" LIMIT 1',
-      [patientId]
-    );
-    if (!enrollments.length) {
-      const err = new Error('Not enrolled in any care plan.'); err.statusCode = 404; throw err;
-    }
-    planId = enrollments[0].plan_id;
-    startDate = enrollments[0].start_date;
-    totalDays = enrollments[0].total_days;
-  } else {
-    // planId passed — check if enrolled to get start_date (optional, won't fail if not enrolled)
-    const [enrollments] = await db.query(
-      'SELECT start_date, total_days FROM app_patient_careplans WHERE app_user_id = ? AND plan_id = ? AND status = "active" LIMIT 1',
-      [patientId, planId]
-    );
-    if (enrollments.length) {
-      startDate = enrollments[0].start_date;
-      totalDays = enrollments[0].total_days;
-    }
+  // 1. Get exercise enrollment (plan_id 1-5)
+  const [[exerciseEnrollment]] = await db.query(
+    `SELECT apc.plan_id, apc.start_date, apc.total_days, cm.care_plan_name
+     FROM app_patient_careplans apc
+     LEFT JOIN careplan_master cm ON cm.id = apc.plan_id
+     WHERE apc.app_user_id = ? AND apc.status = 'active' AND apc.plan_id != 6
+     ORDER BY apc.created_at DESC LIMIT 1`,
+    [patientId]
+  );
+
+  // 2. Get meditation enrollment (plan_id 6)
+  const [[meditationEnrollment]] = await db.query(
+    `SELECT apc.plan_id, apc.start_date, apc.total_days, cm.care_plan_name
+     FROM app_patient_careplans apc
+     LEFT JOIN careplan_master cm ON cm.id = apc.plan_id
+     WHERE apc.app_user_id = ? AND apc.status = 'active' AND apc.plan_id = 6
+     ORDER BY apc.created_at DESC LIMIT 1`,
+    [patientId]
+  );
+
+  // 3. 404 only if NEITHER exercise nor meditation enrolled
+  if (!exerciseEnrollment && !meditationEnrollment) {
+    const err = new Error('Not enrolled in any care plan.'); err.statusCode = 404; throw err;
   }
 
-  // Calculate current day number
-  let currentDayNumber = 1;
-  if (startDate) {
-    const daysDiff = Math.floor((Date.now() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24));
-    currentDayNumber = Math.min(Math.max(daysDiff + 1, 1), totalDays);
-  }
+  const exerciseAssigned = !!exerciseEnrollment;
+  const meditAssigned    = !!meditationEnrollment;
 
-  const planKey = PLAN_KEY_MAP[planId];
-  const isManoswasthya = planId === 6;
+  const totalDays      = exerciseAssigned ? (exerciseEnrollment.total_days || 90) : (meditationEnrollment.total_days || 90);
+  const meditTotalDays = meditAssigned ? (meditationEnrollment.total_days || 90) : 90;
+  const planId         = queryPlanId ? parseInt(queryPlanId) : (exerciseAssigned ? exerciseEnrollment.plan_id : 6);
 
-  // Fetch exercises and sessions in parallel
-  const queries = [
-    db.query('SELECT * FROM app_exercise_programs WHERE plan_id = ? ORDER BY day_number', [planId]),
+  // 4. Fetch exercises and sessions
+  const fetchQueries = [
     db.query(
       `SELECT exercise_id, exercise_score, posture_score, accuracy_score, pace_score,
               compliance_status, DATE(created_at) AS session_date
@@ -71,31 +110,26 @@ const getTodayProgram = async (patientId, queryPlanId) => {
       [patientId]
     ),
   ];
+  if (exerciseAssigned) fetchQueries.push(db.query('SELECT * FROM app_exercise_programs WHERE plan_id = ? ORDER BY day_number', [planId]));
+  if (meditAssigned)    fetchQueries.push(db.query('SELECT * FROM app_exercise_programs WHERE plan_id = 6 ORDER BY day_number'));
 
-  // Always include Manoswasthya as second daily item (unless patient IS on Manoswasthya plan)
-  if (!isManoswasthya) {
-    queries.push(db.query('SELECT * FROM app_exercise_programs WHERE plan_id = 6 ORDER BY day_number'));
-  }
+  const fetchResults  = await Promise.all(fetchQueries);
+  const [sessions]    = fetchResults[0];
+  const mainExercises = exerciseAssigned ? fetchResults[1][0] : [];
+  const meditExercises = meditAssigned ? fetchResults[exerciseAssigned ? 2 : 1][0] : [];
 
-  const results = await Promise.all(queries);
-  const [mainExercises] = results[0];
-  const [sessions] = results[1];
-  const meditationExercises = !isManoswasthya ? results[2][0] : [];
-
-  // Map latest session per exercise_id
+  // 5. Map sessions
   const sessionMap = {};
-  sessions.forEach(s => {
-    if (!sessionMap[s.exercise_id]) sessionMap[s.exercise_id] = s;
-  });
+  sessions.forEach(s => { if (!sessionMap[s.exercise_id]) sessionMap[s.exercise_id] = s; });
 
-  // Group exercises by day
-  const mainByDay = groupByDay(mainExercises);
-  const meditByDay = groupByDay(meditationExercises);
+  // 6. Group by day
+  const mainByDay  = groupByDay(mainExercises);
+  const meditByDay = groupByDay(meditExercises);
 
-  // Build 7-day streak (Mon–Sun current week)
+  // 7. Build week streak
   const weekStreak = buildWeekStreak(sessions);
 
-  // Build all days
+  // 8. Build all days
   const days = [];
   for (let day = 1; day <= totalDays; day++) {
     const items = [...(mainByDay[day] || []), ...(meditByDay[day] || [])];
@@ -104,9 +138,38 @@ const getTodayProgram = async (patientId, queryPlanId) => {
     days.push({ day, isCompleted, protocolItems });
   }
 
+  // 9. Calendar-gated currentDayNumber per track
+  const exerciseCurrentDay = exerciseAssigned
+    ? computeCurrentDay(mainByDay, sessionMap, totalDays, today)
+    : 1;
+  const meditCurrentDay = meditAssigned
+    ? computeCurrentDay(meditByDay, sessionMap, meditTotalDays, today)
+    : 1;
+
+  // 10. Build tracks
+  const tracks = {
+    exercise: {
+      assigned:         exerciseAssigned,
+      planName:         exerciseAssigned ? (exerciseEnrollment.care_plan_name || null) : null,
+      currentDayNumber: exerciseAssigned ? exerciseCurrentDay : 1,
+      totalDays:        exerciseAssigned ? totalDays : 90,
+      startDate:        exerciseAssigned ? enrollmentToStartDate(exerciseEnrollment.start_date) : null,
+    },
+    meditation: {
+      assigned:         meditAssigned,
+      planName:         meditAssigned ? (meditationEnrollment.care_plan_name || null) : null,
+      currentDayNumber: meditAssigned ? meditCurrentDay : 1,
+      totalDays:        meditAssigned ? meditTotalDays : 90,
+      startDate:        meditAssigned ? enrollmentToStartDate(meditationEnrollment.start_date) : null,
+    },
+  };
+
+  const overallCurrentDay = exerciseAssigned ? exerciseCurrentDay : meditCurrentDay;
+
   return {
     totalDays,
-    currentDayNumber,
+    currentDayNumber: overallCurrentDay,
+    tracks,
     days,
     streak: { week: weekStreak },
     activity: {
@@ -293,9 +356,18 @@ const getWellnessHistory = async (patientId) => {
   const month = now.getMonth();
   const monthLabel = now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
 
-  // First and last day of current month
-  const firstDay = new Date(year, month, 1).toISOString().split('T')[0];
-  const lastDay = new Date(year, month + 1, 0).toISOString().split('T')[0];
+  // Last 7 days (today - 6 days to today) — use local date to avoid UTC shift
+  const pad = n => String(n).padStart(2, '0');
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const rangeStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+  const rangeStartStr = `${rangeStart.getFullYear()}-${pad(rangeStart.getMonth() + 1)}-${pad(rangeStart.getDate())}`;
+
+  // Fetch sessions for last 7 days + full month (for stats/recent activities)
+  const firstDay = `${year}-${pad(month + 1)}-01`;
+  const lastDayDate = new Date(year, month + 1, 0);
+  const lastDay  = `${lastDayDate.getFullYear()}-${pad(lastDayDate.getMonth() + 1)}-${pad(lastDayDate.getDate())}`;
+  const queryStart = rangeStartStr < firstDay ? rangeStartStr : firstDay;
+  const queryEnd   = lastDay;
 
   const [sessions] = await db.query(
     `SELECT s.*, DATE(s.created_at) AS session_date, p.exercise_title, p.plan_category, p.plan_name
@@ -304,28 +376,27 @@ const getWellnessHistory = async (patientId) => {
        AND p.day_number = CAST(SUBSTRING_INDEX(s.exercise_id, '-day-', -1) AS UNSIGNED)
      WHERE s.app_user_id = ? AND DATE(s.created_at) BETWEEN ? AND ?
      ORDER BY s.created_at DESC`,
-    [patientId, firstDay, lastDay]
+    [patientId, queryStart, queryEnd]
   );
 
-  // Build completed date set for calendar
+  // Build completed date set
   const completedDates = new Set(
     sessions
       .filter(s => s.compliance_status !== 'missed')
       .map(s => String(s.session_date).split('T')[0])
   );
 
-  // Weekly progress — all days in current month
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const today = now.getDate();
-  const weeklyProgress = Array.from({ length: daysInMonth }, (_, i) => {
-    const d = i + 1;
-    const date = new Date(year, month, d);
-    const dateStr = date.toISOString().split('T')[0];
+  // Weekly progress — last 7 days (today - 6 to today)
+  const weeklyProgress = Array.from({ length: 7 }, (_, i) => {
+    const date = new Date(rangeStart);
+    date.setDate(rangeStart.getDate() + i);
+    const dateStr  = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
     const dayLabel = date.toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase();
+    const isPast   = dateStr < todayStr;
+    const isToday  = dateStr === todayStr;
     let status = 'none';
-    if (d < today) status = completedDates.has(dateStr) ? 'completed' : 'none';
-    else if (d === today) status = completedDates.has(dateStr) ? 'completed' : 'logged';
-    return { date: d, dayLabel, status, isToday: d === today };
+    if (isPast || isToday) status = completedDates.has(dateStr) ? 'completed' : (isToday ? 'logged' : 'none');
+    return { date: date.getDate(), dayLabel, status, isToday };
   });
 
   // Exercise stats

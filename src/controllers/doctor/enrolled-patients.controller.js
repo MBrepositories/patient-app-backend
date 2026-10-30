@@ -3,8 +3,12 @@ const { success, error } = require('../../utils/response');
 
 const getEnrolledPatients = async (req, res) => {
   try {
-    const { search, status, startDate, endDate } = req.query;
-    const result = await enrolledPatientsService.getEnrolledPatients(req.user.id, { search, status, startDate, endDate });
+    const { search, status, startDate, endDate, page, pageSize } = req.query;
+    const result = await enrolledPatientsService.getEnrolledPatients(req.user.id, {
+      search, status, startDate, endDate,
+      page: page ? parseInt(page) : 1,
+      pageSize: pageSize ? parseInt(pageSize) : 20,
+    });
     return success(res, result);
   } catch (err) {
     return error(res, err.message, err.statusCode || 500);

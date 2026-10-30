@@ -83,6 +83,41 @@ const { getDashboardSummary } = require('../controllers/dashboard.controller');
  *                         weightLossKg:
  *                           type: number
  *                           nullable: true
+ *                     score:
+ *                       type: object
+ *                       properties:
+ *                         overall:
+ *                           type: integer
+ *                           example: 72
+ *                           description: 0–100 score (medicine 40% + diet 30% + exercise 30%)
+ *                         rank:
+ *                           type: integer
+ *                           example: 3
+ *                         totalPatients:
+ *                           type: integer
+ *                           example: 20
+ *                         tier:
+ *                           type: string
+ *                           enum: [Bronze, Silver, Gold]
+ *                           nullable: true
+ *                           description: Bronze < 40, Silver 40–69, Gold >= 70
+ *                           example: Gold
+ *                     monthly:
+ *                       type: array
+ *                       description: Last 6 months of health scores
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           month:
+ *                             type: string
+ *                             example: "2026-10"
+ *                           score:
+ *                             type: integer
+ *                             example: 62
+ *                           points:
+ *                             type: integer
+ *                             nullable: true
+ *                             example: 140
  *                     appointments:
  *                       type: array
  *                       items:

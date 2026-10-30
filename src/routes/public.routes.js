@@ -30,7 +30,7 @@ router.get('/stats', async (req, res) => {
   try {
     const [[row]] = await db.query(
       `SELECT COUNT(*) AS userCount FROM patients
-       WHERE app_password IS NOT NULL OR google_id IS NOT NULL OR apple_id IS NOT NULL`
+       WHERE app_last_login IS NOT NULL OR app_password IS NOT NULL OR google_id IS NOT NULL OR apple_id IS NOT NULL`
     );
     return res.json({ success: true, data: { userCount: row.userCount } });
   } catch (err) {

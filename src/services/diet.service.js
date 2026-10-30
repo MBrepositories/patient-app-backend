@@ -250,10 +250,60 @@ const logMeal = async (patientId, { mealPeriod, hasPhoto, notes, timeLabel, esti
 
   awardPoints(patientId, 'log-meals').catch(() => {});
 
+  // Notify assigned doctor (non-blocking)
+  notifyDoctorMeal(patientId, period, estimatedCalories || 0, hasPhoto).catch(() => {});
+
   return {
     id:           `meal-${now}`,
     loggedAtLabel: timeLabel || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
   };
+};
+
+const notifyDoctorMeal = async (patientId, period, calories, hasPhoto) => {
+  // Find assigned doctor — check app careplans first, then clinic careplans
+  let doctorId = null;
+  let patientName = null;
+
+  const [[appCareplan]] = await db.query(
+    `SELECT apc.doctor_id, p.patient_name
+     FROM app_patient_careplans apc
+     JOIN patients p ON p.id = apc.app_user_id
+     WHERE apc.app_user_id = ? AND apc.status = 'active' AND apc.doctor_id IS NOT NULL
+     ORDER BY apc.created_at DESC LIMIT 1`,
+    [patientId]
+  );
+  if (appCareplan && appCareplan.doctor_id) {
+    doctorId    = appCareplan.doctor_id;
+    patientName = appCareplan.patient_name;
+  } else {
+    // Fall back to clinic careplan
+    const [[clinicCareplan]] = await db.query(
+      `SELECT a.doctor_id, p.patient_name
+       FROM patient_careplans pcl
+       JOIN appointments a ON a.id = pcl.appointment_id
+       JOIN patients p ON p.id = pcl.patient_id
+       WHERE pcl.patient_id = ? AND pcl.status = 'active' AND a.doctor_id IS NOT NULL
+       ORDER BY pcl.created_at DESC LIMIT 1`,
+      [patientId]
+    );
+    if (clinicCareplan && clinicCareplan.doctor_id) {
+      doctorId    = clinicCareplan.doctor_id;
+      patientName = clinicCareplan.patient_name;
+    }
+  }
+
+  if (!doctorId) return;
+
+  const periodLabel = period.charAt(0).toUpperCase() + period.slice(1);
+  const title   = 'Meal Logged';
+  const message = `${patientName} logged ${periodLabel}`;
+
+  // photo_url is set later when uploadMealPhoto is called
+  await db.query(
+    `INSERT INTO app_notifications (doctor_id, patient_id_ref, type, title, message, photo_url)
+     VALUES (?, ?, 'meal', ?, ?, NULL)`,
+    [doctorId, patientId, title, message]
+  );
 };
 
 // ─── 5. Foods Catalog ─────────────────────────────────────────────────────────
@@ -333,6 +383,16 @@ const uploadMealPhoto = async (patientId, mealPeriod, file) => {
     `INSERT INTO app_meal_photos (patient_id, meal_period, photo_url) VALUES (?, ?, ?)`,
     [patientId, mealPeriod, photoUrl]
   );
+
+  // Update doctor notification with the actual photo URL (non-blocking)
+  db.query(
+    `UPDATE app_notifications
+     SET photo_url = ?
+     WHERE patient_id_ref = ? AND type = 'meal' AND photo_url IS NULL
+       AND DATE(created_at) = CURDATE()
+       AND title LIKE ?`,
+    [photoUrl, patientId, `%${mealPeriod.charAt(0).toUpperCase() + mealPeriod.slice(1)}%`]
+  ).catch(() => {});
 
   return { photoUrl, mealPeriod };
 };

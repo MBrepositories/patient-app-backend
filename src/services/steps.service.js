@@ -46,14 +46,14 @@ const getStepsDetail = async (patientId) => {
 
   const [{ stepGoal }] = await Promise.all([getPatientGoals(patientId)]);
 
-  // Latest entry today = current running total
+  // Today's steps — prefer date column (new), fallback to logged_at (old)
   const [[latestToday]] = await db.query(
-    `SELECT steps FROM app_steps_log
-     WHERE app_user_id = ? AND type = 'steps' AND DATE(logged_at) = ?
-     ORDER BY logged_at DESC LIMIT 1`,
+    `SELECT MAX(steps) AS steps FROM app_steps_log
+     WHERE app_user_id = ? AND type = 'steps'
+       AND COALESCE(date, DATE(logged_at)) = ?`,
     [patientId, today]
   );
-  const todaySteps = latestToday ? latestToday.steps : 0;
+  const todaySteps = latestToday?.steps || 0;
 
   // Hourly breakdown today
   const [hourlyRows] = await db.query(
@@ -77,13 +77,13 @@ const getStepsDetail = async (patientId) => {
     if (hourMap[h] !== undefined) prev = hourMap[h];
   }
 
-  // Weekly history — last 7 days (max steps per day)
+  // Weekly history — last 7 days, prefer date column (new), fallback to logged_at (old)
   const [weeklyRows] = await db.query(
-    `SELECT DATE_FORMAT(DATE(logged_at), '%Y-%m-%d') AS date, MAX(steps) AS steps
+    `SELECT DATE_FORMAT(COALESCE(date, DATE(logged_at)), '%Y-%m-%d') AS date, MAX(steps) AS steps
      FROM app_steps_log
      WHERE app_user_id = ? AND type = 'steps'
-       AND DATE(logged_at) >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-     GROUP BY DATE(logged_at)
+       AND COALESCE(date, DATE(logged_at)) >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+     GROUP BY COALESCE(date, DATE(logged_at))
      ORDER BY date ASC`,
     [patientId]
   );
@@ -105,11 +105,33 @@ const getStepsDetail = async (patientId) => {
   };
 };
 
-const syncSteps = async (patientId, steps) => {
-  await db.query(
-    `INSERT INTO app_steps_log (app_user_id, type, steps) VALUES (?, 'steps', ?)`,
-    [patientId, steps]
-  );
+const syncSteps = async (patientId, steps, date) => {
+  if (date) {
+    // New: upsert by date, never lower the saved count
+    await db.query(
+      `INSERT INTO app_steps_log (app_user_id, type, date, steps)
+       VALUES (?, 'steps', ?, ?)
+       ON DUPLICATE KEY UPDATE steps = GREATEST(steps, VALUES(steps))`,
+      [patientId, date, steps]
+    );
+  } else {
+    // Old behavior — keep for backward compatibility
+    await db.query(
+      `INSERT INTO app_steps_log (app_user_id, type, steps) VALUES (?, 'steps', ?)`,
+      [patientId, steps]
+    );
+  }
+};
+
+const syncStepsHistory = async (patientId, { days = [] }) => {
+  for (const d of days) {
+    await db.query(
+      `INSERT INTO app_steps_log (app_user_id, type, date, steps)
+       VALUES (?, 'steps', ?, ?)
+       ON DUPLICATE KEY UPDATE steps = GREATEST(steps, VALUES(steps))`,
+      [patientId, d.date, d.steps]
+    );
+  }
 };
 
 // ─── WALKING ─────────────────────────────────────────────────────────────────
@@ -151,4 +173,4 @@ const syncWalking = async (patientId, steps) => {
   );
 };
 
-module.exports = { getStepsDetail, syncSteps, getWalkingDetail, syncWalking };
+module.exports = { getStepsDetail, syncSteps, syncStepsHistory, getWalkingDetail, syncWalking };

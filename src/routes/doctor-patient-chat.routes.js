@@ -58,6 +58,10 @@ const { getChatHistory, sendMessage } = require('../controllers/doctor-patient-c
  *                             type: string
  *                           timeLabel:
  *                             type: string
+ *                             example: "Tue, 9:36 PM"
+ *                           createdAt:
+ *                             type: string
+ *                             example: "2026-09-01T16:06:22.000Z"
  */
 router.get('/', authenticate, getChatHistory);
 
@@ -112,6 +116,9 @@ router.get('/', authenticate, getChatHistory);
  *                     timeLabel:
  *                       type: string
  *                       example: "Tue, 11:02 AM"
+ *                     createdAt:
+ *                       type: string
+ *                       example: "2026-10-01T06:13:06.060Z"
  */
 router.post('/', authenticate, sendMessage);
 

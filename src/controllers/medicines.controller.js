@@ -52,10 +52,20 @@ const getMedicineAdherence = async (req, res) => {
   }
 };
 
+const getPatientMedicines = async (req, res) => {
+  try {
+    const result = await medicinesService.getPatientMedicines(req.user.id);
+    return success(res, result);
+  } catch (err) {
+    return error(res, err.message, err.statusCode || 500);
+  }
+};
+
 module.exports = {
   getMadhavbaugMedicinesMaster,
   getAllopathyMedicinesMaster,
   getMedicinesSummary,
   markDoseTaken,
   getMedicineAdherence,
+  getPatientMedicines,
 };

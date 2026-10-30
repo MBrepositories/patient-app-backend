@@ -156,11 +156,28 @@ const getMedicinesSummary = async (patientId) => {
 const markDoseTaken = async (patientId, medicationId, { slot, taken, type }) => {
   const today = new Date().toISOString().slice(0, 10);
 
+  // For app medicines, verify ownership and extract numeric id
+  const numericId = type === 'app'
+    ? parseInt(String(medicationId).replace('app-', ''), 10)
+    : parseInt(medicationId, 10);
+
+  if (type === 'app') {
+    const [[appMed]] = await db.query(
+      `SELECT id FROM app_patient_medicines WHERE id = ? AND patient_id = ? AND status = 'active'`,
+      [numericId, patientId]
+    );
+    if (!appMed) {
+      const err = new Error('Medicine not found'); err.statusCode = 404; throw err;
+    }
+  }
+
+  const logMedicineId = type === 'app' ? numericId : medicationId;
+
   // Check if already logged today
   const [[existing]] = await db.query(
     `SELECT id FROM app_medicine_logs
      WHERE app_user_id = ? AND medicine_id = ? AND medicine_type = ? AND slot = ? AND DATE(logged_at) = ?`,
-    [patientId, medicationId, type, slot, today]
+    [patientId, logMedicineId, type, slot, today]
   );
 
   if (existing) {
@@ -171,17 +188,61 @@ const markDoseTaken = async (patientId, medicationId, { slot, taken, type }) => 
   } else {
     await db.query(
       `INSERT INTO app_medicine_logs (app_user_id, medicine_id, medicine_type, slot, taken) VALUES (?, ?, ?, ?, ?)`,
-      [patientId, medicationId, type, slot, taken ? 1 : 0]
+      [patientId, logMedicineId, type, slot, taken ? 1 : 0]
     );
   }
 
-  // Trigger medication notification only when marked as taken
+  // Trigger notifications — one per slot per day
   if (taken) {
     const slotLabel = slot.charAt(0).toUpperCase() + slot.slice(1);
+
+    // 1. Patient notification
+    const patientMessage = `You have marked your ${slotLabel} dose as taken. Keep it up!`;
     db.query(
-      `INSERT INTO app_notifications (patient_id, type, title, message) VALUES (?, 'medication', 'Medication Taken', ?)`,
-      [patientId, `You have marked your ${slotLabel} dose as taken. Keep it up!`]
+      `INSERT INTO app_notifications (patient_id, type, title, message)
+       SELECT ?, 'medication', 'Medication Taken', ?
+       FROM DUAL
+       WHERE NOT EXISTS (
+         SELECT 1 FROM app_notifications
+         WHERE patient_id = ? AND type = 'medication'
+           AND DATE(created_at) = CURDATE() AND message = ?
+       )`,
+      [patientId, patientMessage, patientId, patientMessage]
     ).catch(() => {});
+
+    // 2. Doctor notification — for app medicines use prescribing doctor, else careplan/clinic head
+    const doctorQuery = type === 'app'
+      ? db.query(
+          `SELECT doctor_id FROM app_patient_medicines WHERE id = ? LIMIT 1`,
+          [logMedicineId]
+        ).then(([[r]]) => [r])
+      : db.query(
+          `SELECT COALESCE(
+             (SELECT apc.doctor_id FROM app_patient_careplans apc
+              WHERE apc.app_user_id = ? AND apc.status = 'active' AND apc.doctor_id IS NOT NULL
+              ORDER BY apc.created_at DESC LIMIT 1),
+             (SELECT u.id FROM users u JOIN patients p ON p.branch_id = u.branch_id
+              WHERE p.id = ? AND u.clinic_head = 1 AND u.is_active = 1 LIMIT 1)
+           ) AS doctor_id`,
+          [patientId, patientId]
+        ).then(([[r]]) => [r]);
+
+    doctorQuery.then(([row]) => {
+      const doctorId = row?.doctor_id;
+      if (!doctorId) return;
+      const doctorMessage = `Patient marked ${slotLabel} medicine dose as taken`;
+      return db.query(
+        `INSERT INTO app_notifications (doctor_id, patient_id_ref, type, title, message)
+         SELECT ?, ?, 'medication', 'Medicine Taken', ?
+         FROM DUAL
+         WHERE NOT EXISTS (
+           SELECT 1 FROM app_notifications
+           WHERE doctor_id = ? AND patient_id_ref = ? AND type = 'medication'
+             AND DATE(created_at) = CURDATE() AND message = ?
+         )`,
+        [doctorId, patientId, doctorMessage, doctorId, patientId, doctorMessage]
+      );
+    }).catch(() => {});
   }
 };
 
@@ -244,10 +305,41 @@ const getMedicineAdherence = async (patientId) => {
     ];
   }
 
+  // Also include app-prescribed medicines (doctor-added)
+  const [appMedRows] = await db.query(
+    `SELECT id, medicine_name, morning, afternoon, night, sos
+     FROM app_patient_medicines
+     WHERE patient_id = ? AND status = 'active'`,
+    [patientId]
+  );
+  allMedicines = [
+    ...allMedicines,
+    ...appMedRows.map(r => {
+      const slots = [];
+      if (Number(r.morning))   slots.push('morning');
+      if (Number(r.afternoon)) slots.push('afternoon');
+      if (Number(r.night))     slots.push('night');
+      if (Number(r.sos))       slots.push('sos');
+      const slotCodes = slots.map(s => s === 'morning' ? 'M' : s === 'afternoon' ? 'A' : s === 'night' ? 'N' : 'SOS');
+      return {
+        id:             `app-${r.id}`,
+        medicineId:     r.id,
+        type:           'app',
+        name:           r.medicine_name,
+        frequencyLabel: slotCodes.length ? `${slotCodes.join(', ')} daily` : 'As prescribed',
+        badge:          { label: 'ACTIVE', tone: 'active' },
+        scheduledSlots: slots,
+      };
+    }),
+  ];
+
   // Build log map: key = `type-medicineId-date-slot`
   const logMap = {};
   logs.forEach(l => {
-    const key = `${l.medicine_type}-${l.medicine_id}-${l.log_date}-${l.slot}`;
+    const dateStr = l.log_date instanceof Date
+      ? l.log_date.toISOString().slice(0, 10)
+      : String(l.log_date).slice(0, 10);
+    const key = `${l.medicine_type}-${l.medicine_id}-${dateStr}-${l.slot}`;
     logMap[key] = l.taken ? 'logged' : 'missed';
   });
 
@@ -302,10 +394,137 @@ const getMedicineAdherence = async (patientId) => {
   };
 };
 
+// ─── 4. Patient's Prescribed Medicines (flat list) ───────────────────────────
+
+const getPatientMedicines = async (patientId) => {
+  const appointmentId = await getLatestAppointmentId(patientId);
+
+  const [madhavRows] = appointmentId ? await db.query(
+    `SELECT id, medicine_name, dosage, uom FROM patient_madhavbaug
+     WHERE appointment_id = ? AND medicine_name IS NOT NULL AND medicine_name != ''`,
+    [appointmentId]
+  ) : [[]];
+
+  const [alloRows] = appointmentId ? await db.query(
+    `SELECT id, medicine_name, dosage, uom, morning, afternoon, night, other, instructions, frequency
+     FROM patient_allopathy
+     WHERE appointment_id = ? AND notonmedicine = 0 AND medicine_name IS NOT NULL AND medicine_name != ''`,
+    [appointmentId]
+  ) : [[]];
+
+  // App-prescribed medicines added by doctor via app
+  const [appRows] = await db.query(
+    `SELECT apm.id, apm.medicine_name, apm.form_label, apm.category, apm.morning, apm.afternoon,
+            apm.night, apm.sos, apm.instructions, apm.course_days, apm.start_date,
+            u.name AS doctor_name
+     FROM app_patient_medicines apm
+     LEFT JOIN users u ON u.id = apm.doctor_id
+     WHERE apm.patient_id = ? AND apm.status = 'active'
+     ORDER BY apm.created_at DESC`,
+    [patientId]
+  );
+
+  const medicines = [
+    ...madhavRows.map(r => ({
+      id:           `madhav-${r.id}`,
+      medicineId:   r.id,
+      type:         'madhavbaug',
+      name:         r.medicine_name,
+      formLabel:    r.uom ? r.uom.toUpperCase() : 'TABLET',
+      doses:        parseMadhavbaugDosage(r.dosage),
+      instructions: null,
+      doctorName:   null,
+    })),
+    ...alloRows.map(r => ({
+      id:           `allo-${r.id}`,
+      medicineId:   r.id,
+      type:         'allopathy',
+      name:         r.medicine_name,
+      formLabel:    r.uom ? r.uom.toUpperCase() : 'TABLET',
+      doses: {
+        morning:   r.morning   ? parseFloat(r.morning)   || 1 : 0,
+        afternoon: r.afternoon ? parseFloat(r.afternoon) || 1 : 0,
+        night:     r.night     ? parseFloat(r.night)     || 1 : 0,
+        sos:       r.other     ? 1 : 0,
+      },
+      instructions: r.instructions || null,
+      doctorName:   null,
+    })),
+    ...appRows.map(r => ({
+      id:           `app-${r.id}`,
+      medicineId:   r.id,
+      type:         'app',
+      category:     r.category || null,
+      name:         r.medicine_name,
+      formLabel:    r.form_label || 'TABLET',
+      doses: {
+        morning:   parseFloat(r.morning)   || 0,
+        afternoon: parseFloat(r.afternoon) || 0,
+        night:     parseFloat(r.night)     || 0,
+        sos:       r.sos ? 1 : 0,
+      },
+      instructions: r.instructions || null,
+      courseDays:   r.course_days  || null,
+      startDate:    r.start_date   ? String(r.start_date).slice(0, 10) : null,
+      doctorName:   r.doctor_name  || null,
+    })),
+  ];
+
+  return { medicines };
+};
+
+// ─── Add medicine (doctor via app) ───────────────────────────────────────────
+
+const addPatientMedicine = async (doctorId, patientId, data) => {
+  const {
+    medicineName, formLabel = 'TABLET',
+    morning = 0, afternoon = 0, night = 0, sos = 0,
+    instructions = null, courseDays = null, startDate = null,
+    category = null, type: typeField = null,
+  } = data;
+
+  if (!medicineName) {
+    const err = new Error('medicineName is required'); err.statusCode = 400; throw err;
+  }
+
+  // Accept both "category" and "type" fields (type: "allopathy"|"madhavbaug")
+  const rawCategory = category || typeField;
+  const validCategory = ['madhavbaug', 'allopathy'].includes(rawCategory) ? rawCategory : null;
+
+  const [[patient]] = await db.query(
+    `SELECT id FROM patients WHERE id = ? AND status = 'active'`, [patientId]
+  );
+  if (!patient) {
+    const err = new Error('Patient not found'); err.statusCode = 404; throw err;
+  }
+
+  const [result] = await db.query(
+    `INSERT INTO app_patient_medicines
+       (patient_id, doctor_id, medicine_name, form_label, category, morning, afternoon, night, sos, instructions, course_days, start_date, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NOW(), NOW())`,
+    [patientId, doctorId, medicineName, formLabel.toUpperCase(), validCategory, morning, afternoon, night, sos ? 1 : 0, instructions, courseDays || null, startDate || null]
+  );
+
+  return {
+    id:           `app-${result.insertId}`,
+    medicineId:   result.insertId,
+    type:         'app',
+    category:     validCategory,
+    name:         medicineName,
+    formLabel:    formLabel.toUpperCase(),
+    doses:        { morning, afternoon, night, sos: sos ? 1 : 0 },
+    instructions: instructions || null,
+    courseDays:   courseDays || null,
+    startDate:    startDate || null,
+  };
+};
+
 module.exports = {
   getMadhavbaugMedicinesMaster,
   getAllopathyMedicinesMaster,
   getMedicinesSummary,
   markDoseTaken,
   getMedicineAdherence,
+  getPatientMedicines,
+  addPatientMedicine,
 };

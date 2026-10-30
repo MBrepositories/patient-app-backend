@@ -54,7 +54,7 @@ const getBookingOptions = async (patientId) => {
   const [doctors] = await db.query(
     `SELECT u.id, u.name, u.specialization
      FROM users u
-     WHERE u.branch_id = ? AND u.role = 'doctor' AND u.status = 'active'
+     WHERE u.branch_id = ? AND u.role = 'doctor' AND u.is_active = 1
      ORDER BY u.name ASC`,
     [patient.branch_id]
   );
@@ -95,7 +95,7 @@ const getDoctorProfile = async (doctorId, dateIso) => {
             b.branch_name, b.address
      FROM users u
      LEFT JOIN branches b ON b.id = u.branch_id
-     WHERE u.id = ? AND u.role = 'doctor' AND u.status = 'active'`,
+     WHERE u.id = ? AND u.role = 'doctor' AND u.is_active = 1`,
     [doctorId]
   );
   if (!doctor) throw Object.assign(new Error('Doctor not found'), { statusCode: 404 });

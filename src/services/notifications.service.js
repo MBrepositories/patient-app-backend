@@ -20,19 +20,19 @@ const getNotifications = async (patientId, { page = 1, pageSize = 20 } = {}) => 
   const offset = (page - 1) * pageSize;
 
   const [[{ total }]] = await db.query(
-    `SELECT COUNT(*) AS total FROM app_notifications WHERE patient_id = ?`,
+    `SELECT COUNT(*) AS total FROM app_notifications WHERE patient_id = ? AND doctor_id IS NULL`,
     [patientId]
   );
 
   const [[{ unreadCount }]] = await db.query(
-    `SELECT COUNT(*) AS unreadCount FROM app_notifications WHERE patient_id = ? AND is_read = 0`,
+    `SELECT COUNT(*) AS unreadCount FROM app_notifications WHERE patient_id = ? AND doctor_id IS NULL AND is_read = 0`,
     [patientId]
   );
 
   const [rows] = await db.query(
     `SELECT id, type, title, message, is_read, created_at
      FROM app_notifications
-     WHERE patient_id = ?
+     WHERE patient_id = ? AND doctor_id IS NULL
      ORDER BY created_at DESC
      LIMIT ? OFFSET ?`,
     [patientId, pageSize, offset]
@@ -59,7 +59,7 @@ const getNotifications = async (patientId, { page = 1, pageSize = 20 } = {}) => 
 const markOneRead = async (patientId, notificationId) => {
   const [result] = await db.query(
     `UPDATE app_notifications SET is_read = 1
-     WHERE id = ? AND patient_id = ?`,
+     WHERE id = ? AND patient_id = ? AND doctor_id IS NULL`,
     [notificationId, patientId]
   );
   if (result.affectedRows === 0) {
@@ -72,7 +72,7 @@ const markOneRead = async (patientId, notificationId) => {
 const markAllRead = async (patientId) => {
   await db.query(
     `UPDATE app_notifications SET is_read = 1
-     WHERE patient_id = ? AND is_read = 0`,
+     WHERE patient_id = ? AND doctor_id IS NULL AND is_read = 0`,
     [patientId]
   );
 };

@@ -1,5 +1,4 @@
 const db = require('../config/db');
-const { generateReply } = require('./chat.service');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -13,14 +12,32 @@ const formatTimeLabel = (date) => {
   return isToday ? timeLabel : `${dayLabel}, ${timeLabel}`;
 };
 
+// Build display name: first_name + last_name if set, else name
+const buildDoctorName = (row) => {
+  if (!row) return null;
+  const full = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
+  return full || row.name || null;
+};
+
+// Build doctor image URL
+const buildDoctorImage = (row) => {
+  if (!row) return null;
+  const file = row.profile_picture || row.profile_image || null;
+  return file ? `https://powermap.in/assets/profile_pictures/${file}` : null;
+};
+
 // Get assigned doctor — stored doctor first, then branch Clinic Head
 const getAssignedDoctor = async (patientId) => {
+  const SELECT_DOCTOR = `u.name, u.first_name, u.last_name, u.id,
+            COALESCE(u.specialization, 'General Physician') AS specialty,
+            NULLIF(u.profile_picture, '') AS profile_picture,
+            NULLIF(u.profile_image, '')   AS profile_image`;
+
   // 1. Stored doctor_id on the latest active care plan enrollment
   const [[careplanRow]] = await db.query(
-    `SELECT u.name, u.id,
-            COALESCE(u.specialization, 'General Physician') AS specialty
+    `SELECT ${SELECT_DOCTOR}
      FROM app_patient_careplans apc
-     INNER JOIN users u ON u.id = apc.doctor_id AND u.status = 'active'
+     INNER JOIN users u ON u.id = apc.doctor_id AND u.is_active = 1
      WHERE apc.app_user_id = ? AND apc.status = 'active' AND apc.doctor_id IS NOT NULL
      ORDER BY apc.created_at DESC LIMIT 1`,
     [patientId]
@@ -29,10 +46,9 @@ const getAssignedDoctor = async (patientId) => {
 
   // 2. Backfill: branch Clinic Head (clinic_head = 1)
   const [[clinicHeadRow]] = await db.query(
-    `SELECT u.name, u.id,
-            COALESCE(u.specialization, 'General Physician') AS specialty
+    `SELECT ${SELECT_DOCTOR}
      FROM patients p
-     INNER JOIN users u ON u.branch_id = p.branch_id AND u.status = 'active' AND u.clinic_head = 1
+     INNER JOIN users u ON u.branch_id = p.branch_id AND u.is_active = 1 AND u.clinic_head = 1
      WHERE p.id = ?
      LIMIT 1`,
     [patientId]
@@ -41,10 +57,9 @@ const getAssignedDoctor = async (patientId) => {
 
   // 3. Last resort: any active doctor in the branch
   const [[branchRow]] = await db.query(
-    `SELECT u.name, u.id,
-            COALESCE(u.specialization, 'General Physician') AS specialty
+    `SELECT ${SELECT_DOCTOR}
      FROM patients p
-     INNER JOIN users u ON u.branch_id = p.branch_id AND u.role = 'doctor' AND u.status = 'active'
+     INNER JOIN users u ON u.branch_id = p.branch_id AND u.role = 'doctor' AND u.is_active = 1
      WHERE p.id = ?
      ORDER BY u.id ASC LIMIT 1`,
     [patientId]
@@ -69,9 +84,10 @@ const getChatHistory = async (patientId) => {
     getPatientName(patientId),
   ]);
 
-  const doctorName    = doctor ? doctor.name : 'Your Doctor';
+  const doctorName     = buildDoctorName(doctor) || 'Your Doctor';
   const doctorInitials = doctorName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
   const doctorSpecialty = doctor?.specialty || 'General Physician';
+  const doctorImage    = buildDoctorImage(doctor);
 
   // Mark doctor/ai messages as read (patient is opening the chat)
   await db.query(
@@ -80,42 +96,39 @@ const getChatHistory = async (patientId) => {
     [patientId]
   );
 
-  // Messages from app_chat_messages (patient/doctor/ai senders only)
+  // Messages + persistent activity records from app_chat_messages
   const [msgRows] = await db.query(
     `SELECT id, sender, sender_name, text, status, created_at
      FROM app_chat_messages
-     WHERE patient_id = ? AND sender IN ('patient', 'doctor', 'ai')
+     WHERE patient_id = ? AND sender IN ('patient', 'doctor', 'ai', 'activity')
      ORDER BY created_at ASC`,
     [patientId]
   );
 
-  const messageItems = msgRows.map(r => ({
-    kind:       'message',
-    id:         `msg-${r.id}`,
-    sender:     r.sender,
-    senderName: r.sender_name || (r.sender === 'patient' ? patientName : r.sender === 'doctor' ? doctorName : 'AiSHA AI'),
-    text:       r.text,
-    status:     r.status || 'delivered',
-    timeLabel:  formatTimeLabel(r.created_at),
-    _sortAt:    new Date(r.created_at).getTime(),
-  }));
-
-  // Activity items — vitals (last 30 days)
-  const [vitalRows] = await db.query(
-    `SELECT type, value, logged_at FROM app_vitals
-     WHERE app_user_id = ? AND logged_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-     ORDER BY logged_at ASC`,
-    [patientId]
-  );
-
-  const vitalItems = vitalRows.map((r, i) => ({
-    kind:      'activity',
-    id:        `activity-vitals-${i}`,
-    type:      'vitals',
-    summary:   `Logged ${r.type.charAt(0).toUpperCase() + r.type.slice(1)}: ${r.value}`,
-    timeLabel: formatTimeLabel(r.logged_at),
-    _sortAt:   new Date(r.logged_at).getTime(),
-  }));
+  const messageItems = msgRows.map(r => {
+    if (r.sender === 'activity') {
+      return {
+        kind:      'activity',
+        id:        `activity-${r.id}`,
+        type:      r.sender_name,
+        summary:   r.text,
+        timeLabel: formatTimeLabel(r.created_at),
+        createdAt: new Date(r.created_at).toISOString(),
+        _sortAt:   new Date(r.created_at).getTime(),
+      };
+    }
+    return {
+      kind:       'message',
+      id:         `msg-${r.id}`,
+      sender:     r.sender,
+      senderName: r.sender_name || (r.sender === 'patient' ? patientName : r.sender === 'doctor' ? doctorName : 'AiSHA AI'),
+      text:       r.text,
+      status:     r.status || 'delivered',
+      timeLabel:  formatTimeLabel(r.created_at),
+      createdAt:  new Date(r.created_at).toISOString(),
+      _sortAt:    new Date(r.created_at).getTime(),
+    };
+  });
 
   // Activity items — meals (last 30 days)
   const [mealRows] = await db.query(
@@ -131,6 +144,7 @@ const getChatHistory = async (patientId) => {
     type:      'meal',
     summary:   `Logged ${r.meal_period.charAt(0).toUpperCase() + r.meal_period.slice(1)} meal`,
     timeLabel: formatTimeLabel(r.logged_at),
+    createdAt: new Date(r.logged_at).toISOString(),
     _sortAt:   new Date(r.logged_at).getTime(),
   }));
 
@@ -150,6 +164,7 @@ const getChatHistory = async (patientId) => {
       type:      'exercise',
       summary:   `Exercise session ${r.compliance_status || 'completed'}${key ? ` — ${key}` : ''}`,
       timeLabel: formatTimeLabel(r.created_at),
+      createdAt: new Date(r.created_at).toISOString(),
       _sortAt:   new Date(r.created_at).getTime(),
     };
   });
@@ -176,12 +191,13 @@ const getChatHistory = async (patientId) => {
       type:      'doseChange',
       summary:   `Doctor updated ${r.medicine_name} dosage${dosageLabel}`,
       timeLabel: formatTimeLabel(r.created_at),
+      createdAt: new Date(r.created_at).toISOString(),
       _sortAt:   new Date(r.created_at).getTime(),
     };
   });
 
   // Merge all items and sort oldest → newest
-  const items = [...messageItems, ...vitalItems, ...mealItems, ...exerciseItems, ...doseItems]
+  const items = [...messageItems, ...mealItems, ...exerciseItems, ...doseItems]
     .sort((a, b) => a._sortAt - b._sortAt)
     .map(({ _sortAt, ...item }) => item);
 
@@ -189,43 +205,32 @@ const getChatHistory = async (patientId) => {
     doctorName,
     doctorSpecialty,
     doctorInitials,
+    doctorImage,
     items,
   };
 };
 
-// ─── POST — save patient message + AI reply ───────────────────────────────────
+// ─── POST — save patient message ─────────────────────────────────────────────
 
 const sendMessage = async (patientId, text) => {
-  const [doctor, patientName] = await Promise.all([
-    getAssignedDoctor(patientId),
-    getPatientName(patientId),
-  ]);
+  const patientName = await getPatientName(patientId);
 
-  const doctorName = doctor ? doctor.name : 'Your Doctor';
-
-  // Save patient message
-  await db.query(
-    `INSERT INTO app_chat_messages (patient_id, sender, sender_name, text) VALUES (?, 'patient', ?, ?)`,
+  // Save patient message only — no AI auto-reply in doctor-patient chat
+  const [result] = await db.query(
+    `INSERT INTO app_chat_messages (patient_id, sender, sender_name, text, created_at) VALUES (?, 'patient', ?, ?, UTC_TIMESTAMP())`,
     [patientId, patientName, text]
   );
 
-  // Generate AI reply — AI does not speak in doctor's name
-  const replyText = await generateReply(patientId, text);
-  const aiReply = replyText;
-
-  const [result] = await db.query(
-    `INSERT INTO app_chat_messages (patient_id, sender, sender_name, text) VALUES (?, 'ai', 'AiSHA AI', ?)`,
-    [patientId, aiReply]
-  );
-
+  const now = new Date();
   return {
     kind:       'message',
     id:         `msg-${result.insertId}`,
-    sender:     'ai',
-    senderName: 'AiSHA AI',
-    text:       aiReply,
+    sender:     'patient',
+    senderName: patientName,
+    text,
     status:     'delivered',
-    timeLabel:  formatTimeLabel(new Date()),
+    timeLabel:  formatTimeLabel(now),
+    createdAt:  now.toISOString(),
   };
 };
 
@@ -265,21 +270,35 @@ const getDoctorChatHistory = async (doctorId, patientId) => {
   const [msgRows] = await db.query(
     `SELECT id, sender, sender_name, text, status, created_at
      FROM app_chat_messages
-     WHERE patient_id = ? AND sender IN ('patient', 'doctor', 'ai')
+     WHERE patient_id = ? AND sender IN ('patient', 'doctor', 'ai', 'activity')
      ORDER BY created_at ASC`,
     [patientId]
   );
 
-  const messageItems = msgRows.map(r => ({
-    kind:       'message',
-    id:         `msg-${r.id}`,
-    sender:     r.sender,
-    senderName: r.sender_name || (r.sender === 'patient' ? patientName : r.sender === 'doctor' ? doctorName : 'AiSHA AI'),
-    text:       r.text,
-    status:     r.status || 'delivered',
-    timeLabel:  formatTimeLabel(r.created_at),
-    _sortAt:    new Date(r.created_at).getTime(),
-  }));
+  const messageItems = msgRows.map(r => {
+    if (r.sender === 'activity') {
+      return {
+        kind:      'activity',
+        id:        `activity-${r.id}`,
+        type:      r.sender_name,
+        summary:   r.text,
+        timeLabel: formatTimeLabel(r.created_at),
+        createdAt: new Date(r.created_at).toISOString(),
+        _sortAt:   new Date(r.created_at).getTime(),
+      };
+    }
+    return {
+      kind:       'message',
+      id:         `msg-${r.id}`,
+      sender:     r.sender,
+      senderName: r.sender_name || (r.sender === 'patient' ? patientName : r.sender === 'doctor' ? doctorName : 'AiSHA AI'),
+      text:       r.text,
+      status:     r.status || 'delivered',
+      timeLabel:  formatTimeLabel(r.created_at),
+      createdAt:  new Date(r.created_at).toISOString(),
+      _sortAt:    new Date(r.created_at).getTime(),
+    };
+  });
 
   // Dose change activities (last 30 days)
   const [doseRows] = await db.query(
@@ -303,11 +322,40 @@ const getDoctorChatHistory = async (doctorId, patientId) => {
       type:      'doseChange',
       summary:   `Doctor updated ${r.medicine_name} dosage${dosageLabel}`,
       timeLabel: formatTimeLabel(r.created_at),
+      createdAt: new Date(r.created_at).toISOString(),
       _sortAt:   new Date(r.created_at).getTime(),
     };
   });
 
-  const items = [...messageItems, ...doseItems]
+  // Medicine taken events (last 30 days)
+  const [medLogRows] = await db.query(
+    `SELECT aml.medicine_id, aml.medicine_type, aml.slot, aml.taken, aml.logged_at,
+            COALESCE(apm.medicine_name, pm.medicine_name, pa.medicine_name) AS medicine_name
+     FROM app_medicine_logs aml
+     LEFT JOIN app_patient_medicines apm ON apm.id = aml.medicine_id AND aml.medicine_type = 'app'
+     LEFT JOIN patient_madhavbaug pm    ON pm.id  = aml.medicine_id AND aml.medicine_type = 'madhavbaug'
+     LEFT JOIN patient_allopathy pa     ON pa.id  = aml.medicine_id AND aml.medicine_type = 'allopathy'
+     WHERE aml.app_user_id = ? AND aml.taken = 1
+       AND aml.logged_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+     ORDER BY aml.logged_at ASC`,
+    [patientId]
+  );
+
+  const medLogItems = medLogRows.map((r, i) => {
+    const slotLabel = r.slot ? r.slot.charAt(0).toUpperCase() + r.slot.slice(1) : '';
+    const name = r.medicine_name || 'Medicine';
+    return {
+      kind:      'activity',
+      id:        `activity-medtaken-${i}`,
+      type:      'medicineTaken',
+      summary:   `${name} — ${slotLabel} dose taken`,
+      timeLabel: formatTimeLabel(r.logged_at),
+      createdAt: new Date(r.logged_at).toISOString(),
+      _sortAt:   new Date(r.logged_at).getTime(),
+    };
+  });
+
+  const items = [...messageItems, ...doseItems, ...medLogItems]
     .sort((a, b) => a._sortAt - b._sortAt)
     .map(({ _sortAt, ...item }) => item);
 
@@ -342,11 +390,12 @@ const sendDoctorMessage = async (doctorId, patientId, text) => {
   const doctorName = doctorRow?.name || 'Doctor';
 
   const [result] = await db.query(
-    `INSERT INTO app_chat_messages (patient_id, sender, sender_name, text, status)
-     VALUES (?, 'doctor', ?, ?, 'delivered')`,
+    `INSERT INTO app_chat_messages (patient_id, sender, sender_name, text, status, created_at)
+     VALUES (?, 'doctor', ?, ?, 'delivered', UTC_TIMESTAMP())`,
     [patientId, doctorName, text]
   );
 
+  const now = new Date();
   return {
     kind:       'message',
     id:         `msg-${result.insertId}`,
@@ -354,7 +403,8 @@ const sendDoctorMessage = async (doctorId, patientId, text) => {
     senderName: doctorName,
     text,
     status:     'delivered',
-    timeLabel:  formatTimeLabel(new Date()),
+    timeLabel:  formatTimeLabel(now),
+    createdAt:  now.toISOString(),
   };
 };
 
